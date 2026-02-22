@@ -30,6 +30,7 @@ tree = bot.tree
 conn = sqlite3.connect("attendance.db")
 cursor = conn.cursor()
 
+# 출석 설정
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS settings (
     guild_id INTEGER PRIMARY KEY,
@@ -40,6 +41,7 @@ CREATE TABLE IF NOT EXISTS settings (
 )
 """)
 
+# 출석 기록
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS attendance (
     user_id INTEGER,
@@ -49,162 +51,158 @@ CREATE TABLE IF NOT EXISTS attendance (
 )
 """)
 
+# 유저 스탯
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER,
+    guild_id INTEGER,
+    points INTEGER DEFAULT 0,
+    level INTEGER DEFAULT 1,
+    attendance_count INTEGER DEFAULT 0,
+    PRIMARY KEY (user_id, guild_id)
+)
+""")
+
 conn.commit()
 
 # ==========================
-# ! 출석설정 (prefix)
+# 레벨업 함수
 # ==========================
 
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def 출석설정(ctx, option=None, *args):
+def check_level_up(user_id, guild_id):
+    cursor.execute("""
+    SELECT points, level FROM users
+    WHERE user_id=? AND guild_id=?
+    """, (user_id, guild_id))
 
-    if not option:
-        return await ctx.send("출석설정 채널 / 시간 / 메시지")
+    points, level = cursor.fetchone()
 
-    cursor.execute("INSERT OR IGNORE INTO settings (guild_id) VALUES (?)", (ctx.guild.id,))
+    leveled_up = False
 
-    if option == "채널":
-        cursor.execute(
-            "UPDATE settings SET channel_id=? WHERE guild_id=?",
-            (ctx.channel.id, ctx.guild.id)
-        )
+    while points >= level * 100:
+        points -= level * 100
+        level += 1
+        leveled_up = True
 
-    elif option == "시간":
-        if len(args) < 2:
-            return await ctx.send("형식: !출석설정 시간 9 30")
-
-        hour = int(args[0])
-        minute = int(args[1])
-
-        cursor.execute(
-            "UPDATE settings SET hour=?, minute=? WHERE guild_id=?",
-            (hour, minute, ctx.guild.id)
-        )
-
-    elif option == "메시지":
-        message = " ".join(args)
-        if not message:
-            return await ctx.send("메시지를 입력하세요")
-
-        cursor.execute(
-            "UPDATE settings SET message=? WHERE guild_id=?",
-            (message, ctx.guild.id)
-        )
-
-    else:
-        return await ctx.send("채널 / 시간 / 메시지 중 입력")
+    cursor.execute("""
+    UPDATE users SET points=?, level=?
+    WHERE user_id=? AND guild_id=?
+    """, (points, level, user_id, guild_id))
 
     conn.commit()
-    await ctx.send("설정 완료")
+
+    return leveled_up, level
 
 # ==========================
-# ! 출석 (prefix)
+# 출석 처리 함수
+# ==========================
+
+def process_attendance(user_id, guild_id):
+    now = datetime.now(KST)
+    today = now.strftime("%Y-%m-%d")
+
+    cursor.execute("""
+    SELECT 1 FROM attendance
+    WHERE user_id=? AND guild_id=? AND date=?
+    """, (user_id, guild_id, today))
+
+    if cursor.fetchone():
+        return False, None
+
+    # 출석 기록 저장
+    cursor.execute("""
+    INSERT INTO attendance (user_id, guild_id, date)
+    VALUES (?, ?, ?)
+    """, (user_id, guild_id, today))
+
+    # 유저 없으면 생성
+    cursor.execute("""
+    INSERT OR IGNORE INTO users (user_id, guild_id)
+    VALUES (?, ?)
+    """, (user_id, guild_id))
+
+    # 포인트 +100, 출석횟수 +1
+    cursor.execute("""
+    UPDATE users
+    SET points = points + 100,
+        attendance_count = attendance_count + 1
+    WHERE user_id=? AND guild_id=?
+    """, (user_id, guild_id))
+
+    conn.commit()
+
+    leveled_up, level = check_level_up(user_id, guild_id)
+
+    return True, (leveled_up, level)
+
+# ==========================
+# ! 출석
 # ==========================
 
 @bot.command()
 async def 출석(ctx):
 
-    now = datetime.now(KST)
-    today = now.strftime("%Y-%m-%d")
+    success, result = process_attendance(ctx.author.id, ctx.guild.id)
 
-    cursor.execute("""
-    SELECT 1 FROM attendance
-    WHERE user_id=? AND guild_id=? AND date=?
-    """, (ctx.author.id, ctx.guild.id, today))
+    if not success:
+        return await ctx.send("이미 오늘 출석했습니다")
 
-    if cursor.fetchone():
-        return await ctx.send("이미 출석")
+    leveled_up, level = result
 
-    cursor.execute("""
-    INSERT INTO attendance (user_id, guild_id, date)
-    VALUES (?, ?, ?)
-    """, (ctx.author.id, ctx.guild.id, today))
-
-    conn.commit()
-    await ctx.send("출석 완료")
+    if leveled_up:
+        await ctx.send(f"출석 완료! 🎉 레벨업! 현재 레벨: {level}")
+    else:
+        await ctx.send("출석 완료! +100포인트 지급")
 
 # ==========================
-# / 출석 (slash)
+# / 출석
 # ==========================
 
 @tree.command(name="출석", description="출석 체크")
 async def slash_attendance(interaction: discord.Interaction):
 
-    now = datetime.now(KST)
-    today = now.strftime("%Y-%m-%d")
+    success, result = process_attendance(interaction.user.id, interaction.guild.id)
 
-    cursor.execute("""
-    SELECT 1 FROM attendance
-    WHERE user_id=? AND guild_id=? AND date=?
-    """, (interaction.user.id, interaction.guild.id, today))
+    if not success:
+        return await interaction.response.send_message("이미 오늘 출석했습니다", ephemeral=True)
 
-    if cursor.fetchone():
-        return await interaction.response.send_message("이미 출석", ephemeral=True)
+    leveled_up, level = result
 
-    cursor.execute("""
-    INSERT INTO attendance (user_id, guild_id, date)
-    VALUES (?, ?, ?)
-    """, (interaction.user.id, interaction.guild.id, today))
-
-    conn.commit()
-    await interaction.response.send_message("출석 완료")
-
-# ==========================
-# / 출석설정 (slash)
-# ==========================
-
-@tree.command(name="출석설정", description="출석 설정")
-@app_commands.describe(
-    옵션="채널 / 시간 / 메시지",
-    값1="시간 또는 메시지",
-    값2="분 (시간 설정시)"
-)
-async def slash_setting(
-    interaction: discord.Interaction,
-    옵션: str,
-    값1: str = None,
-    값2: str = None
-):
-
-    if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("관리자만 사용 가능", ephemeral=True)
-
-    guild_id = interaction.guild.id
-    cursor.execute("INSERT OR IGNORE INTO settings (guild_id) VALUES (?)", (guild_id,))
-
-    if 옵션 == "채널":
-        cursor.execute(
-            "UPDATE settings SET channel_id=? WHERE guild_id=?",
-            (interaction.channel.id, guild_id)
-        )
-
-    elif 옵션 == "시간":
-        if not 값1 or not 값2:
-            return await interaction.response.send_message("예: 옵션=시간 값1=9 값2=30", ephemeral=True)
-
-        hour = int(값1)
-        minute = int(값2)
-
-        cursor.execute(
-            "UPDATE settings SET hour=?, minute=? WHERE guild_id=?",
-            (hour, minute, guild_id)
-        )
-
-    elif 옵션 == "메시지":
-        if not 값1:
-            return await interaction.response.send_message("메시지를 입력하세요", ephemeral=True)
-
-        cursor.execute(
-            "UPDATE settings SET message=? WHERE guild_id=?",
-            (값1, guild_id)
-        )
-
+    if leveled_up:
+        await interaction.response.send_message(f"출석 완료! 🎉 레벨업! 현재 레벨: {level}")
     else:
-        return await interaction.response.send_message("채널 / 시간 / 메시지 중 입력", ephemeral=True)
+        await interaction.response.send_message("출석 완료! +100포인트 지급")
 
-    conn.commit()
-    await interaction.response.send_message("설정 완료")
+# ==========================
+# / 스탯
+# ==========================
+
+@tree.command(name="스탯", description="내 스탯 확인")
+async def slash_stat(interaction: discord.Interaction):
+
+    cursor.execute("""
+    SELECT points, level, attendance_count
+    FROM users
+    WHERE user_id=? AND guild_id=?
+    """, (interaction.user.id, interaction.guild.id))
+
+    data = cursor.fetchone()
+
+    if not data:
+        return await interaction.response.send_message("데이터가 없습니다")
+
+    points, level, count = data
+    need = level * 100
+
+    await interaction.response.send_message(
+        f"""
+📊 **{interaction.user.display_name}님의 스탯**
+
+레벨: {level}
+현재 포인트: {points}/{need}
+총 출석 횟수: {count}
+"""
+    )
 
 # ==========================
 # 자동 출석 메시지
