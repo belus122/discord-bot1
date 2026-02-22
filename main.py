@@ -69,6 +69,12 @@ conn.commit()
 # 레벨업 함수
 # ==========================
 
+if channel:
+    await channel.send(
+        message,
+        allowed_mentions=discord.AllowedMentions(everyone=True)
+    )
+
 def check_level_up(user_id, guild_id):
     cursor.execute("""
     SELECT points, level FROM users
