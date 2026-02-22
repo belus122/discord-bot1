@@ -68,6 +68,53 @@ conn.commit()
 # ==========================
 # 레벨업 함수
 # ==========================
+# ==========================
+# /예시 (테스트 메시지)
+# ==========================
+
+@tree.command(name="예시", description="출석 메시지 테스트")
+async def example(interaction: discord.Interaction):
+
+    guild_id = interaction.guild.id
+
+    cursor.execute("""
+    SELECT channel_id, message FROM settings
+    WHERE guild_id=?
+    """, (guild_id,))
+
+    result = cursor.fetchone()
+
+    if not result:
+        return await interaction.response.send_message(
+            "출석설정이 되어있지 않습니다",
+            ephemeral=True
+        )
+
+    channel_id, message = result
+
+    if not channel_id or not message:
+        return await interaction.response.send_message(
+            "채널 또는 메시지가 설정되지 않았습니다",
+            ephemeral=True
+        )
+
+    channel = interaction.guild.get_channel(channel_id)
+
+    if not channel:
+        return await interaction.response.send_message(
+            "채널을 찾을 수 없습니다",
+            ephemeral=True
+        )
+
+    await channel.send(
+        message,
+        allowed_mentions=discord.AllowedMentions(everyone=True)
+    )
+
+    await interaction.response.send_message(
+        "예시 메시지 전송 완료",
+        ephemeral=True
+    )
 
 if channel:
     await channel.send(
